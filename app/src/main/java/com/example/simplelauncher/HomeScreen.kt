@@ -66,6 +66,9 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.Layout
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.ScrollState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -124,6 +127,12 @@ private val FOLDER_CELL_HEIGHT = 92.dp
 private val BANNER_HEIGHT = 32.dp
 private val PRAYER_ROW_HEIGHT = 28.dp
 
+// Üst şerit en fazla 5 satır: hava durumu (dikey boşluğuyla) + 4 satır. Fazlası şeridin içinde kayar.
+private val BANNER_PAGE_HEIGHT = BANNER_HEIGHT + 8.dp + PRAYER_ROW_HEIGHT * 4
+
+// Sayfa noktalarının kapladığı yükseklik (üst boşluk + nokta + alt boşluk).
+private val PAGE_DOTS_HEIGHT = 6.dp + 5.dp + 4.dp
+
 /** Uzun basılan uygulamanın menüsü: [anchor] ikon hücresinin kök koordinatlarındaki yeri. */
 private data class AppMenuState(val pkg: String, val anchor: Rect, val folderKey: String?)
 
@@ -160,6 +169,10 @@ fun HomeScreen(
     var menu by remember { mutableStateOf<AppMenuState?>(null) }
     // Eşik ayarları açık olan banka.
     var thresholdSlot by remember { mutableStateOf<BankSlot?>(null) }
+    val bannerPager = rememberPagerState { 2 }
+    // Şerit sayfalarının kendi dikey kaydırmaları.
+    val infoScroll = rememberScrollState()
+    val tableScroll = rememberScrollState()
 
     BackHandler(enabled = editMode || openFolder != null || menu != null || thresholdSlot != null) {
         when {
@@ -178,6 +191,7 @@ fun HomeScreen(
             editMode = false
             menu = null
             thresholdSlot = null
+            if (bannerPager.currentPage != 0) bannerPager.animateScrollToPage(0)
             if (scroll.value != 0) scroll.animateScrollTo(0)
         }
     }
@@ -188,21 +202,26 @@ fun HomeScreen(
             delay(10 * 60 * 1000L)
             vm.refreshWeather()
             vm.refreshBank()
+            vm.refreshMarkets()
         }
     }
 
     val mergeRadiusPx = with(density) { (ICON_SIZE * 0.4f).toPx() }
     var bannerPx by remember { mutableIntStateOf(with(density) { (BANNER_HEIGHT + PRAYER_ROW_HEIGHT * 2).roundToPx() }) }
     val iconShiftPx = with(density) { ICON_CENTER_SHIFT.toPx() }
+    // Hücre yüksekliği üstteki şeridin gerçek boyuna bağlı değil: ekrandan yalnızca sabit bir pay düşülür.
+    // Böylece şeride satır (banka, piyasa tablosu) eklendikçe ikonlar ezilmez; ızgara aşağı kayar.
+    val reservedPx = with(density) { (BANNER_PAGE_HEIGHT + PAGE_DOTS_HEIGHT).roundToPx() }
+    fun cellHeight(): Int = (gridSize.height - reservedPx) / ROWS
 
     // Parmağın altındaki hücre ve (ikonun ortasındaysa) birleşme hedefi.
     // [pointer] görünen alan koordinatında; ızgaraya göre kaydırma ve şerit yüksekliği kadar kaymış.
     val dropTarget by remember {
         derivedStateOf {
             val dragKey = draggedKey ?: return@derivedStateOf null
-            if (gridSize.width == 0 || gridSize.height <= bannerPx) return@derivedStateOf null
+            if (gridSize.width == 0 || gridSize.height <= reservedPx) return@derivedStateOf null
             val cellW = gridSize.width / COLUMNS.toFloat()
-            val cellH = (gridSize.height - bannerPx) / ROWS
+            val cellH = cellHeight()
             val contentY = pointer.y + scroll.value - bannerPx
             val col = (pointer.x / cellW).toInt().coerceIn(0, COLUMNS - 1)
             val row = (contentY / cellH).toInt().coerceAtLeast(0)
@@ -248,11 +267,11 @@ fun HomeScreen(
 
     // Verilen noktanın (görünen alan koordinatı) altındaki öğenin listedeki indeksi (yoksa -1).
     fun hitIndex(p: Offset): Int {
-        if (gridSize.width == 0 || gridSize.height <= bannerPx) return -1
+        if (gridSize.width == 0 || gridSize.height <= reservedPx) return -1
         val contentY = p.y + scroll.value - bannerPx
         if (contentY < 0) return -1
         val col = (p.x / (gridSize.width / COLUMNS.toFloat())).toInt()
-        val row = (contentY / ((gridSize.height - bannerPx) / ROWS)).toInt()
+        val row = (contentY / (cellHeight())).toInt()
         if (col !in 0 until COLUMNS) return -1
         val index = row * COLUMNS + col
         return if (index < order.size) index else -1
@@ -262,7 +281,7 @@ fun HomeScreen(
     fun cellRect(index: Int): Rect {
         val coords = gridCoords ?: return Rect.Zero
         val cellW = gridSize.width / COLUMNS
-        val cellH = (gridSize.height - bannerPx) / ROWS
+        val cellH = cellHeight()
         val topLeft = coords.localToRoot(
             Offset((index % COLUMNS * cellW).toFloat(), (index / COLUMNS * cellH + bannerPx - scroll.value).toFloat()),
         )
@@ -295,6 +314,9 @@ fun HomeScreen(
                     val down = awaitFirstDown(requireUnconsumed = false)
                     lastDown = down.position
                     if (scroll.value != 0) return@awaitEachGesture
+                    // Şeridin içi kaydırılmışsa aşağı kaydırma önce onu geri sarar, bildirim panelini açmaz.
+                    val bannerScroll = if (bannerPager.currentPage == 0) infoScroll else tableScroll
+                    if (bannerScroll.value != 0) return@awaitEachGesture
                     while (true) {
                         val event = awaitPointerEvent()
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
@@ -387,9 +409,9 @@ fun HomeScreen(
                         }
                     },
             ) {
-                if (gridSize.width > 0 && gridSize.height > bannerPx) {
+                if (gridSize.width > 0 && gridSize.height > reservedPx) {
                     val cellW = gridSize.width / COLUMNS
-                    val cellH = (gridSize.height - bannerPx) / ROWS
+                    val cellH = cellHeight()
                     val totalRows = maxOf((order.size + COLUMNS - 1) / COLUMNS, ROWS)
                     Column(
                         modifier = Modifier
@@ -397,56 +419,40 @@ fun HomeScreen(
                             .verticalScroll(scroll, enabled = draggedKey == null),
                     ) {
                         // Hava durumu şeridi ve ezan vakti ızgaranın ilk satırı gibi listeyle birlikte kayar.
+                        // Üst şerit yatay sayfalar: 1) hava durumu, ezan, bankalar 2) piyasa performansı.
+                        // Yüksekliği sabit 5 satır; uzun sayfa kendi içinde dikey kayar.
                         Column(modifier = Modifier.onSizeChanged { bannerPx = it.height }) {
-                            WeatherBanner(
-                                weather = vm.weather,
-                                status = vm.weatherStatus,
-                                onClick = {
-                                    if (vm.weatherStatus == WeatherStatus.NeedsPermission) onRequestLocation()
-                                    else vm.refreshWeather(force = true)
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = BANNER_HEIGHT)
-                                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                            )
-                            PrayerCountdown(
-                                schedule = vm.prayers,
-                                needsPermission = vm.weatherStatus == WeatherStatus.NeedsPermission,
-                                onStale = { vm.refreshWeather() },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(PRAYER_ROW_HEIGHT)
-                                    .padding(horizontal = 16.dp),
-                            )
-                            // Her banka kendi satırında; adlar aynı genişlikte ki bakiyeler alt alta hizalansın.
-                            val labelWidth = vm.banks.maxOfOrNull { it.name.length } ?: 0
-                            for (slot in vm.banks) {
-                                key(slot.name) {
-                                    BankRow(
-                                        label = slot.name.padEnd(labelWidth),
-                                        balance = slot.balance,
-                                        status = slot.status,
-                                        hidden = vm.bankHidden,
-                                        levelOf = { vm.thresholdsFor(slot.name, it.currency).level(it.amount) },
-                                        onTap = {
-                                            when {
-                                                slot.status == BankStatus.NotConfigured -> Unit
-                                                slot.status == BankStatus.NotConnected ||
-                                                    slot.status == BankStatus.Expired -> onConnectBank(slot)
-                                                // Bakiye varsa dokunmak eşik ayarlarını açar; yoksa yeniden dener.
-                                                slot.balance != null -> thresholdSlot = slot
-                                                else -> vm.refreshBank(slot, force = true)
-                                            }
-                                        },
-                                        onLongPress = { vm.refreshBank(slot, force = true) },
+                            HorizontalPager(
+                                state = bannerPager,
+                                modifier = Modifier.height(BANNER_PAGE_HEIGHT),
+                                verticalAlignment = Alignment.Top,
+                            ) { page ->
+                                when (page) {
+                                    0 -> InfoPage(
+                                        vm = vm,
+                                        scroll = infoScroll,
+                                        onRequestLocation = onRequestLocation,
+                                        onConnectBank = onConnectBank,
+                                        onThresholds = { thresholdSlot = it },
+                                    )
+                                    else -> PerformanceTable(
+                                        data = vm.markets,
+                                        scroll = tableScroll,
+                                        rowHeight = PRAYER_ROW_HEIGHT,
+                                        onLongPress = { vm.refreshMarkets(force = true) },
                                         modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(PRAYER_ROW_HEIGHT)
+                                            .fillMaxSize()
                                             .padding(horizontal = 16.dp),
                                     )
                                 }
                             }
+                            PageDots(
+                                count = bannerPager.pageCount,
+                                current = bannerPager.currentPage,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 6.dp, bottom = 4.dp),
+                            )
                         }
                         Box(
                             modifier = Modifier
@@ -1426,5 +1432,83 @@ private fun Switch(on: Boolean) {
                 .size(18.dp)
                 .background(if (on) Color(0xFF202022) else Color.White, CircleShape),
         )
+    }
+}
+
+/** Üst şeridin sayfa noktaları. */
+@Composable
+private fun PageDots(count: Int, current: Int, modifier: Modifier = Modifier) {
+    Row(modifier = modifier, horizontalArrangement = Arrangement.Center) {
+        repeat(count) { i ->
+            val alpha by animateFloatAsState(if (i == current) 0.9f else 0.3f, label = "dot")
+            Box(
+                Modifier
+                    .padding(horizontal = 3.dp)
+                    .size(5.dp)
+                    .background(Color.White.copy(alpha = alpha), CircleShape),
+            )
+        }
+    }
+}
+
+/** Üst şeridin ilk sayfası: hava durumu, ezan vakti ve banka bakiyeleri. */
+@Composable
+private fun InfoPage(
+    vm: LauncherViewModel,
+    scroll: ScrollState,
+    onRequestLocation: () -> Unit,
+    onConnectBank: (BankSlot) -> Unit,
+    onThresholds: (BankSlot) -> Unit,
+) {
+    Column(Modifier.fillMaxSize().verticalScroll(scroll)) {
+        WeatherBanner(
+            weather = vm.weather,
+            status = vm.weatherStatus,
+            onClick = {
+                if (vm.weatherStatus == WeatherStatus.NeedsPermission) onRequestLocation()
+                else vm.refreshWeather(force = true)
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = BANNER_HEIGHT)
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+        )
+        PrayerCountdown(
+            schedule = vm.prayers,
+            needsPermission = vm.weatherStatus == WeatherStatus.NeedsPermission,
+            onStale = { vm.refreshWeather() },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(PRAYER_ROW_HEIGHT)
+                .padding(horizontal = 16.dp),
+        )
+        // Her banka kendi satırında; adlar aynı genişlikte ki bakiyeler alt alta hizalansın.
+        val labelWidth = vm.banks.maxOfOrNull { it.name.length } ?: 0
+        for (slot in vm.banks) {
+            key(slot.name) {
+                BankRow(
+                    label = slot.name.padEnd(labelWidth),
+                    balance = slot.balance,
+                    status = slot.status,
+                    hidden = vm.bankHidden,
+                    levelOf = { vm.thresholdsFor(slot.name, it.currency).level(it.amount) },
+                    onTap = {
+                        when {
+                            slot.status == BankStatus.NotConfigured -> Unit
+                            slot.status == BankStatus.NotConnected ||
+                                slot.status == BankStatus.Expired -> onConnectBank(slot)
+                            // Bakiye varsa dokunmak eşik ayarlarını açar; yoksa yeniden dener.
+                            slot.balance != null -> onThresholds(slot)
+                            else -> vm.refreshBank(slot, force = true)
+                        }
+                    },
+                    onLongPress = { vm.refreshBank(slot, force = true) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(PRAYER_ROW_HEIGHT)
+                        .padding(horizontal = 16.dp),
+                )
+            }
+        }
     }
 }

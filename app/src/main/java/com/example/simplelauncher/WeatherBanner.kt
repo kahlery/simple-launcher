@@ -19,6 +19,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.runtime.key
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -503,4 +511,112 @@ private fun DrawScope.cloud(
     }
     if (erase) drawPath(path, Color.Black, blendMode = BlendMode.Clear)
     drawPath(path, color, style = stroke)
+}
+
+/**
+ * Enflasyon ve piyasa performans tablosu: her satırda 1–36 aylık yüzde değişim. Piyasa satırları
+ * artışta yeşil, düşüşte kırmızı; enflasyon satırları (aynı dönemdeki birikimli fiyat artışı) nötr renkte.
+ * Uzun basınca hemen yenilenir.
+ */
+@Composable
+fun PerformanceTable(
+    data: MarketData?,
+    scroll: ScrollState,
+    rowHeight: Dp,
+    onLongPress: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val longPress by rememberUpdatedState(onLongPress)
+    Column(
+        modifier = modifier.pointerInput(Unit) { detectTapGestures(onLongPress = { longPress() }) },
+    ) {
+        // Başlık yerinde kalır; satırlar şeridin yüksekliğine sığmazsa altında kayar.
+        PerfLine(label = "", price = "now" to PERF_DIM, cells = PERF_PERIODS.map { "${it}m" to PERF_DIM }, height = rowHeight)
+        if (data == null) {
+            BasicText(text = "Loading markets…", style = perfText.copy(color = PERF_DIM))
+            return@Column
+        }
+        Column(Modifier.weight(1f).verticalScroll(scroll)) {
+            for (row in data.rows) {
+                key(row.label) {
+                    PerfLine(
+                        label = row.label,
+                        // Enflasyonun fiyatı yok; verinin ait olduğu ay gösterilir (ne kadar güncel olduğu görünsün).
+                        price = if (row.inflation) {
+                            (row.asOf?.month?.getDisplayName(java.time.format.TextStyle.SHORT, Locale.US) ?: "–") to PERF_DIM
+                        } else {
+                            formatPrice(row.price) to Color.White
+                        },
+                        cells = row.values.map { v ->
+                            val color = when {
+                                v == null -> PERF_DIM
+                                row.inflation -> PERF_NEUTRAL
+                                v > 0.05 -> BALANCE_GREEN
+                                v < -0.05 -> BALANCE_RED
+                                else -> Color.White
+                            }
+                            formatPct(v) to color
+                        },
+                        height = rowHeight,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private val PERF_DIM = Color.White.copy(alpha = 0.45f)
+private val PERF_NEUTRAL = Color.White.copy(alpha = 0.75f)
+
+// Fiyat sütunu da sığsın diye tablo şeritten bir punto küçük.
+private val perfText = bannerText.copy(fontSize = 12.sp)
+
+@Composable
+private fun PerfLine(label: String, price: Pair<String, Color>, cells: List<Pair<String, Color>>, height: Dp) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(height),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        BasicText(text = label, modifier = Modifier.weight(1.3f), maxLines = 1, style = perfText)
+        BasicText(
+            text = price.first,
+            modifier = Modifier.weight(1.3f),
+            maxLines = 1,
+            style = perfText.copy(color = price.second, textAlign = TextAlign.End),
+        )
+        for ((text, color) in cells) {
+            BasicText(
+                text = text,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                style = perfText.copy(color = color, textAlign = TextAlign.End),
+            )
+        }
+    }
+}
+
+/** Güncel fiyat, en fazla ~5 hane: 1,591 · 337.0 · 50.21 · 1.123 */
+private fun formatPrice(v: Double?): String {
+    if (v == null) return "–"
+    val a = kotlin.math.abs(v)
+    return when {
+        a >= 1000 -> String.format(Locale.US, "%,.0f", v)
+        a >= 100 -> String.format(Locale.US, "%.1f", v)
+        a >= 10 -> String.format(Locale.US, "%.2f", v)
+        else -> String.format(Locale.US, "%.3f", v)
+    }
+}
+
+/** Kısa yüzde: 10'un altında bir ondalık, üstünde tam sayı, 1000 ve üstü "k" (işaretli, % olmadan). */
+private fun formatPct(v: Double?): String {
+    if (v == null) return "–"
+    val sign = if (v > 0) "+" else if (v < 0) "-" else ""
+    val a = kotlin.math.abs(v)
+    return sign + when {
+        a >= 1000 -> String.format(Locale.US, "%.1fk", a / 1000)
+        a >= 10 -> String.format(Locale.US, "%.0f", a)
+        else -> String.format(Locale.US, "%.1f", a)
+    }
 }

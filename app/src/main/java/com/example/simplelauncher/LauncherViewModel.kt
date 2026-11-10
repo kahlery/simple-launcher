@@ -42,6 +42,29 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     var weatherStatus by mutableStateOf(WeatherStatus.Loading)
         private set
 
+    private val marketRepo = MarketRepository(application)
+
+    /** Enflasyon ve piyasa performans tablosu. */
+    var markets by mutableStateOf(marketRepo.cached())
+        private set
+    private var marketJob: Job? = null
+
+    /** Piyasa verisini en fazla [MARKET_TTL_MS]'de bir yeniler; [force] kullanıcının isteğidir. */
+    fun refreshMarkets(force: Boolean = false) {
+        if (marketJob?.isActive == true) return
+        val last = markets
+        if (!force && last != null && System.currentTimeMillis() - last.fetchedAt < MARKET_TTL_MS) return
+        marketJob = viewModelScope.launch {
+            try {
+                markets = marketRepo.fetch()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "piyasa verisi alınamadı", e)
+            }
+        }
+    }
+
     var prayers by mutableStateOf(prayerRepo.cached())
         private set
 
@@ -411,6 +434,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         const val DEFAULT_FOLDER_NAME = "Folder"
         const val WEATHER_TTL_MS = 20 * 60 * 1000L
         const val BANK_TTL_MS = 6 * 60 * 60 * 1000L
+        const val MARKET_TTL_MS = 3 * 60 * 60 * 1000L
     }
 }
 

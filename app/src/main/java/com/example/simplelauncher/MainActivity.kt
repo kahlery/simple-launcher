@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
         vm.refresh()
         vm.refreshWeather()
         vm.refreshBank()
+        vm.refreshMarkets()
     }
 
     override fun onNewIntent(intent: Intent) {
