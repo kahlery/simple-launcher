@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+    <!-- Aşağı kaydırınca bildirim panelini açmak için -->
+    <uses-permission android:name="android.permission.EXPAND_STATUS_BAR" />
+    <!-- Hava durumu şeridi: yaklaşık konum + Open-Meteo -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- N26: elle yenilemede banka sorgusuna cihazın IP adresini eklemek için -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Yüklü uygulamaların başlatıcı etkinliklerini görebilmek için -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:label="Launcher"
+        android:theme="@style/Theme.SimpleLauncher">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:stateNotNeeded="true"
+            android:windowSoftInputMode="adjustPan"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode">
+
+            <!-- Ana ekran (HOME) uygulaması olarak seçilebilmesi için -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+
+            <!-- Android Studio'dan doğrudan çalıştırabilmek için -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- N26 bağlantısı: banka onay sayfası -->
+        <activity
+            android:name=".BankAuthActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:taskAffinity="com.example.simplelauncher.bank"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
+        <!-- Uygulama ikonlarındaki bildirim noktaları -->
+        <service
+            android:name=".NotificationDotService"
+            android:exported="true"
+            android:label="Launcher notification dots"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

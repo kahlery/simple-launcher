@@ -1,0 +1,11 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+
+# Enable Banking anahtarları
+secrets.properties
+secrets/
+*.pem
+.kotlin/
