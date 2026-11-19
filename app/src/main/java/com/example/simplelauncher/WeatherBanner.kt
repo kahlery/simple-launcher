@@ -27,6 +27,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -77,14 +79,13 @@ fun WeatherBanner(
     weather: Weather?,
     status: WeatherStatus,
     onClick: () -> Unit,
+    onLongPress: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val tap by rememberUpdatedState(onClick)
+    val longPress by rememberUpdatedState(onLongPress)
     Row(
-        modifier = modifier.clickable(
-            interactionSource = remember { MutableInteractionSource() },
-            indication = null,
-            onClick = onClick,
-        ),
+        modifier = modifier.pointerInput(Unit) { detectTapGestures(onTap = { tap() }, onLongPress = { longPress() }) },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (weather != null) {
@@ -516,30 +517,54 @@ private fun DrawScope.cloud(
 /**
  * Enflasyon ve piyasa performans tablosu: her satırda 1–36 aylık yüzde değişim. Piyasa satırları
  * artışta yeşil, düşüşte kırmızı; enflasyon satırları (aynı dönemdeki birikimli fiyat artışı) nötr renkte.
- * Uzun basınca hemen yenilenir.
+ * Satıra dokununca [onRowTap] (menü), uzun basınca [onLongPress] (hemen yenile).
  */
 @Composable
 fun PerformanceTable(
     data: MarketData?,
     scroll: ScrollState,
     rowHeight: Dp,
+    onRowTap: (label: String, bounds: Rect) -> Unit,
+    onAdd: () -> Unit,
     onLongPress: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val longPress by rememberUpdatedState(onLongPress)
-    Column(
-        modifier = modifier.pointerInput(Unit) { detectTapGestures(onLongPress = { longPress() }) },
-    ) {
+    val rowTap by rememberUpdatedState(onRowTap)
+    Column(modifier = modifier) {
         // Başlık yerinde kalır; satırlar şeridin yüksekliğine sığmazsa altında kayar.
-        PerfLine(label = "", price = "now" to PERF_DIM, cells = PERF_PERIODS.map { "${it}m" to PERF_DIM }, height = rowHeight)
+        PerfLine(
+            label = "",
+            price = "now" to PERF_DIM,
+            cells = PERF_PERIODS.map { "${it}m" to PERF_DIM },
+            height = rowHeight,
+            modifier = Modifier.pointerInput(Unit) { detectTapGestures(onLongPress = { longPress() }) },
+        )
         if (data == null) {
             BasicText(text = "Loading markets…", style = perfText.copy(color = PERF_DIM))
             return@Column
         }
         Column(Modifier.weight(1f).verticalScroll(scroll)) {
+            if (data.rows.isEmpty()) {
+                BasicText(
+                    text = "+ Add symbol",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(rowHeight)
+                        .pointerInput(Unit) { detectTapGestures(onTap = { onAdd() }) }
+                        .padding(vertical = 5.dp),
+                    style = perfText.copy(color = PERF_DIM),
+                )
+            }
             for (row in data.rows) {
                 key(row.label) {
+                    var bounds by remember { mutableStateOf(Rect.Zero) }
                     PerfLine(
+                        modifier = Modifier
+                            .onGloballyPositioned { bounds = it.boundsInRoot() }
+                            .pointerInput(row.label) {
+                                detectTapGestures(onTap = { rowTap(row.label, bounds) }, onLongPress = { longPress() })
+                            },
                         label = row.label,
                         // Enflasyonun fiyatı yok; verinin ait olduğu ay gösterilir (ne kadar güncel olduğu görünsün).
                         price = if (row.inflation) {
@@ -572,9 +597,15 @@ private val PERF_NEUTRAL = Color.White.copy(alpha = 0.75f)
 private val perfText = bannerText.copy(fontSize = 12.sp)
 
 @Composable
-private fun PerfLine(label: String, price: Pair<String, Color>, cells: List<Pair<String, Color>>, height: Dp) {
+private fun PerfLine(
+    label: String,
+    price: Pair<String, Color>,
+    cells: List<Pair<String, Color>>,
+    height: Dp,
+    modifier: Modifier = Modifier,
+) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .height(height),
         verticalAlignment = Alignment.CenterVertically,

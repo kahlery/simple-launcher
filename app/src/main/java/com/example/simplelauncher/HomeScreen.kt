@@ -72,6 +72,7 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import java.util.Locale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -175,6 +176,11 @@ fun HomeScreen(
     // Banka satırına dokununca açılan menü (banka ve satırın ekrandaki yeri) ve "banka ekle" listesi.
     var bankMenu by remember { mutableStateOf<Pair<BankSlot, Rect>?>(null) }
     var addingBank by remember { mutableStateOf(false) }
+    // Hava durumu satırına dokununca açılan saatlik tahmin.
+    var showHourly by remember { mutableStateOf(false) }
+    // Piyasa tablosunda dokunulan satırın menüsü ve "sembol ekle" listesi.
+    var marketMenu by remember { mutableStateOf<Pair<String, Rect>?>(null) }
+    var addingMarket by remember { mutableStateOf(false) }
     val bannerPager = rememberPagerState { 2 }
     // Şerit sayfalarının kendi dikey kaydırmaları.
     val infoScroll = rememberScrollState()
@@ -182,9 +188,12 @@ fun HomeScreen(
 
     BackHandler(
         enabled = editMode || openFolder != null || menu != null || thresholdSlot != null ||
-            bankMenu != null || addingBank,
+            bankMenu != null || addingBank || marketMenu != null || addingMarket || showHourly,
     ) {
         when {
+            showHourly -> showHourly = false
+            addingMarket -> addingMarket = false
+            marketMenu != null -> marketMenu = null
             addingBank -> addingBank = false
             bankMenu != null -> bankMenu = null
             thresholdSlot != null -> thresholdSlot = null
@@ -204,6 +213,9 @@ fun HomeScreen(
             thresholdSlot = null
             bankMenu = null
             addingBank = false
+            marketMenu = null
+            addingMarket = false
+            showHourly = false
             if (bannerPager.currentPage != 0) bannerPager.animateScrollToPage(0)
             if (scroll.value != 0) scroll.animateScrollTo(0)
         }
@@ -447,11 +459,14 @@ fun HomeScreen(
                                         onRequestLocation = onRequestLocation,
                                         onBankMenu = { slot, anchor -> bankMenu = slot to anchor },
                                         onAddBank = { addingBank = true },
+                                        onShowHourly = { showHourly = true },
                                     )
                                     else -> PerformanceTable(
                                         data = vm.markets,
                                         scroll = tableScroll,
                                         rowHeight = PRAYER_ROW_HEIGHT,
+                                        onRowTap = { label, bounds -> marketMenu = label to bounds },
+                                        onAdd = { addingMarket = true },
                                         onLongPress = { vm.refreshMarkets(force = true) },
                                         modifier = Modifier
                                             .fillMaxSize()
@@ -630,6 +645,73 @@ fun HomeScreen(
                     onConnectBank(vm.addBank(name))
                 },
                 onDismiss = { addingBank = false },
+            )
+        }
+
+        AnimatedVisibility(
+            visible = showHourly,
+            enter = fadeIn(tween(MENU_ANIM_MS)),
+            exit = fadeOut(tween(MENU_ANIM_MS)),
+        ) {
+            HourlyDialog(
+                weather = vm.weather,
+                loading = vm.weatherStatus == WeatherStatus.Loading,
+                onRefresh = { vm.refreshWeather(force = true) },
+                onDismiss = { showHourly = false },
+            )
+        }
+
+        // Piyasa tablosu satırının menüsü.
+        var shownMarketMenu by remember { mutableStateOf<Pair<String, Rect>?>(null) }
+        LaunchedEffect(marketMenu) { marketMenu?.let { shownMarketMenu = it } }
+        AnimatedVisibility(
+            visible = marketMenu != null,
+            enter = fadeIn(tween(MENU_ANIM_MS)),
+            exit = fadeOut(tween(MENU_ANIM_MS)),
+        ) {
+            val (label, anchor) = shownMarketMenu ?: return@AnimatedVisibility
+            val rows = vm.markets?.rows.orEmpty()
+            val index = rows.indexOfFirst { it.label == label }
+            MarketMenu(
+                label = label,
+                anchor = anchor,
+                canMoveUp = index > 0,
+                canMoveDown = index in 0 until rows.lastIndex,
+                onDismiss = { marketMenu = null },
+                onRefresh = {
+                    marketMenu = null
+                    vm.refreshMarkets(force = true)
+                },
+                onAdd = {
+                    marketMenu = null
+                    addingMarket = true
+                },
+                onMove = { delta -> vm.moveMarket(label, delta) },
+                onRemove = {
+                    marketMenu = null
+                    vm.removeMarket(label)
+                },
+            )
+        }
+
+        // "Sembol ekle": Yahoo araması + listeden çıkarılmış hazır satırlar.
+        AnimatedVisibility(
+            visible = addingMarket,
+            enter = fadeIn(tween(MENU_ANIM_MS)),
+            exit = fadeOut(tween(MENU_ANIM_MS)),
+        ) {
+            AddMarketDialog(
+                builtins = remember { vm.removedMarketDefaults() },
+                search = vm::searchSymbols,
+                onPickBuiltin = {
+                    addingMarket = false
+                    vm.addMarket(it)
+                },
+                onPickSymbol = {
+                    addingMarket = false
+                    vm.addMarketSymbol(it)
+                },
+                onDismiss = { addingMarket = false },
             )
         }
 
@@ -1531,6 +1613,7 @@ private fun InfoPage(
     onRequestLocation: () -> Unit,
     onBankMenu: (BankSlot, Rect) -> Unit,
     onAddBank: () -> Unit,
+    onShowHourly: () -> Unit,
 ) {
     // Menünün satırın yanında açılması için her banka satırının ekrandaki yeri.
     val rowBounds = remember { HashMap<String, Rect>() }
@@ -1538,10 +1621,15 @@ private fun InfoPage(
         WeatherBanner(
             weather = vm.weather,
             status = vm.weatherStatus,
+            // Dokun: saatlik tahmin (veri yoksa izin ister / yeniden dener). Uzun bas: hemen yenile.
             onClick = {
-                if (vm.weatherStatus == WeatherStatus.NeedsPermission) onRequestLocation()
-                else vm.refreshWeather(force = true)
+                when {
+                    vm.weatherStatus == WeatherStatus.NeedsPermission -> onRequestLocation()
+                    vm.weather != null -> onShowHourly()
+                    else -> vm.refreshWeather(force = true)
+                }
             },
+            onLongPress = { vm.refreshWeather(force = true) },
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = BANNER_HEIGHT)
@@ -1724,6 +1812,268 @@ private fun AddBankDialog(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 style = TextStyle(fontFamily = LauncherFont, color = Color.White, fontSize = 15.sp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Piyasa tablosu satırının menüsü: yenile, ekle, yukarı/aşağı taşı, kaldır (iki dokunuşla). */
+@Composable
+private fun MarketMenu(
+    label: String,
+    anchor: Rect,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onDismiss: () -> Unit,
+    onRefresh: () -> Unit,
+    onAdd: () -> Unit,
+    onMove: (Int) -> Unit,
+    onRemove: () -> Unit,
+) {
+    var confirmRemove by remember(label) { mutableStateOf(false) }
+    AnchoredMenu(anchor = anchor, onDismiss = onDismiss) {
+        MenuRow(label = "Refresh", onClick = onRefresh) { MenuGlyph("↻") }
+        MenuRow(label = "Add symbol", onClick = onAdd) { MenuGlyph("+") }
+        // Taşırken menü açık kalır ki art arda birkaç kez taşınabilsin.
+        if (canMoveUp) MenuRow(label = "Move up", onClick = { onMove(-1) }) { MenuGlyph("↑") }
+        if (canMoveDown) MenuRow(label = "Move down", onClick = { onMove(1) }) { MenuGlyph("↓") }
+        MenuRow(
+            label = if (confirmRemove) "Tap again to remove" else "Remove $label",
+            onClick = { if (confirmRemove) onRemove() else confirmRemove = true },
+            color = DANGER_RED,
+        ) { MenuGlyph("×", DANGER_RED) }
+    }
+}
+
+/**
+ * Sembol ekleme: arama kutusuna yazınca Yahoo'da arar (hisse, ETF, fon, döviz, emtia, kripto).
+ * Arama boşken listeden çıkarılmış hazır satırlar (enflasyon, altın, kurlar) gösterilir.
+ */
+@Composable
+private fun AddMarketDialog(
+    builtins: List<MarketItem>,
+    search: suspend (String) -> List<SymbolResult>,
+    onPickBuiltin: (MarketItem) -> Unit,
+    onPickSymbol: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val focusManager = LocalFocusManager.current
+    var query by remember { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<SymbolResult>>(emptyList()) }
+    var searching by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf(false) }
+    LaunchedEffect(query) {
+        failed = false
+        if (query.isBlank()) {
+            results = emptyList()
+            searching = false
+            return@LaunchedEffect
+        }
+        searching = true
+        delay(350) // yazarken her harfte istek atmamak için
+        try {
+            results = search(query)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            failed = true
+            results = emptyList()
+        }
+        searching = false
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.6f))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) {
+                focusManager.clearFocus()
+                onDismiss()
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(horizontal = 24.dp)
+                .fillMaxWidth()
+                .background(Color(0xFF202022), RoundedCornerShape(28.dp))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { focusManager.clearFocus() }
+                .padding(20.dp),
+        ) {
+            BasicText(
+                text = "Add symbol",
+                style = TextStyle(fontFamily = LauncherFont, fontWeight = FontWeight.Medium, color = Color.White, fontSize = 18.sp),
+            )
+            BasicTextField(
+                value = query,
+                onValueChange = { query = it.take(40) },
+                modifier = Modifier
+                    .padding(top = 14.dp, bottom = 8.dp)
+                    .fillMaxWidth()
+                    .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                singleLine = true,
+                textStyle = TextStyle(fontFamily = LauncherFont, color = Color.White, fontSize = 15.sp),
+                cursorBrush = SolidColor(Color.White),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
+                decorationBox = { inner ->
+                    Box {
+                        if (query.isEmpty()) {
+                            BasicText(
+                                text = "Symbol or name (EIMI, gold, BTC…)",
+                                style = TextStyle(fontFamily = LauncherFont, color = Color.White.copy(alpha = 0.35f), fontSize = 15.sp),
+                            )
+                        }
+                        inner()
+                    }
+                },
+            )
+            val dim = TextStyle(fontFamily = LauncherFont, color = Color.White.copy(alpha = 0.5f), fontSize = 13.sp)
+            val main = TextStyle(fontFamily = LauncherFont, color = Color.White, fontSize = 15.sp)
+            LazyColumn(Modifier.heightIn(max = 340.dp)) {
+                if (query.isBlank()) {
+                    if (builtins.isNotEmpty()) {
+                        item { BasicText("Built-in", Modifier.padding(top = 6.dp, bottom = 2.dp), style = dim) }
+                    }
+                    items(builtins, key = { "b:" + it.label }) { item ->
+                        BasicText(
+                            text = item.label,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onPickBuiltin(item) }
+                                .padding(vertical = 11.dp),
+                            style = main,
+                        )
+                    }
+                } else {
+                    when {
+                        failed -> item { BasicText("Couldn't search. Check the connection.", Modifier.padding(vertical = 12.dp), style = dim) }
+                        searching && results.isEmpty() -> item { BasicText("Searching…", Modifier.padding(vertical = 12.dp), style = dim) }
+                        !searching && results.isEmpty() -> item { BasicText("No results", Modifier.padding(vertical = 12.dp), style = dim) }
+                    }
+                    items(results, key = { "s:" + it.symbol }) { r ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onPickSymbol(r.symbol) }
+                                .padding(vertical = 8.dp),
+                        ) {
+                            BasicText(r.symbol, style = main, maxLines = 1)
+                            BasicText(
+                                text = listOf(r.name, r.exchange, r.type).filter { it.isNotBlank() }.joinToString(" · "),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = dim,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Önümüzdeki 24 saatin tahmini: saat, gök durumu, sıcaklık, yağış olasılığı, rüzgâr ve UV.
+ * Günün değiştiği yerde ayraç olarak gün adı yazılır. Önbellekte saatlik veri yoksa (eski sürüm) yeniler.
+ */
+@Composable
+private fun HourlyDialog(weather: Weather?, loading: Boolean, onRefresh: () -> Unit, onDismiss: () -> Unit) {
+    val hours = weather?.hourly.orEmpty()
+    LaunchedEffect(hours.isEmpty()) { if (hours.isEmpty()) onRefresh() }
+    val zone = java.time.ZoneId.systemDefault()
+    val hourFormat = remember { java.time.format.DateTimeFormatter.ofPattern("HH:mm") }
+    val dayFormat = remember { java.time.format.DateTimeFormatter.ofPattern("EEEE", Locale.US) }
+    val main = TextStyle(fontFamily = LauncherFont, color = Color.White, fontSize = 15.sp)
+    val dim = TextStyle(fontFamily = LauncherFont, color = Color.White.copy(alpha = 0.5f), fontSize = 13.sp)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.6f))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onDismiss,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(horizontal = 24.dp)
+                .fillMaxWidth()
+                .background(Color(0xFF202022), RoundedCornerShape(28.dp))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) {}
+                .padding(20.dp),
+        ) {
+            BasicText(
+                text = listOfNotNull(weather?.place, "Hourly").joinToString(" · "),
+                style = TextStyle(fontFamily = LauncherFont, fontWeight = FontWeight.Medium, color = Color.White, fontSize = 18.sp),
+            )
+            // Sütun başlıkları
+            Row(Modifier.padding(top = 12.dp, bottom = 4.dp)) {
+                BasicText("", Modifier.width(56.dp))
+                BasicText("", Modifier.width(34.dp))
+                BasicText("temp", Modifier.weight(1f), style = dim.copy(textAlign = TextAlign.End))
+                BasicText("rain", Modifier.weight(1f), style = dim.copy(textAlign = TextAlign.End))
+                BasicText("km/h", Modifier.weight(1f), style = dim.copy(textAlign = TextAlign.End))
+                BasicText("UV", Modifier.weight(0.7f), style = dim.copy(textAlign = TextAlign.End))
+            }
+            if (hours.isEmpty()) {
+                BasicText(
+                    text = if (loading) "Loading…" else "No hourly data. Long-press the weather row to refresh.",
+                    modifier = Modifier.padding(vertical = 12.dp),
+                    style = dim,
+                )
+            }
+            LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                hours.forEachIndexed { i, h ->
+                    val date = java.time.Instant.ofEpochMilli(h.time).atZone(zone)
+                    val newDay = i > 0 && date.toLocalDate() !=
+                        java.time.Instant.ofEpochMilli(hours[i - 1].time).atZone(zone).toLocalDate()
+                    if (newDay) {
+                        item(key = "d" + h.time) {
+                            BasicText(date.format(dayFormat), Modifier.padding(top = 10.dp, bottom = 4.dp), style = dim)
+                        }
+                    }
+                    item(key = h.time) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(36.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            BasicText(if (i == 0) "Now" else date.format(hourFormat), Modifier.width(56.dp), style = main)
+                            Box(Modifier.width(34.dp)) {
+                                WeatherGlyph(code = h.code, isDay = h.isDay, color = Color.White, modifier = Modifier.size(20.dp))
+                            }
+                            BasicText("${h.temp}°", Modifier.weight(1f), style = main.copy(textAlign = TextAlign.End))
+                            BasicText(
+                                text = "${h.rain}%",
+                                modifier = Modifier.weight(1f),
+                                // Yağış olasılığı yüksekse göze çarpsın.
+                                style = main.copy(
+                                    textAlign = TextAlign.End,
+                                    color = if (h.rain >= 50) Color(0xFF6FB6FF) else if (h.rain == 0) Color.White.copy(alpha = 0.4f) else Color.White,
+                                ),
+                            )
+                            BasicText("${h.wind}", Modifier.weight(1f), style = main.copy(textAlign = TextAlign.End))
+                            BasicText(
+                                text = "${h.uv}",
+                                modifier = Modifier.weight(0.7f),
+                                style = main.copy(textAlign = TextAlign.End, color = if (h.uv == 0) Color.White.copy(alpha = 0.4f) else Color.White),
                             )
                         }
                     }

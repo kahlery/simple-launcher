@@ -6,6 +6,7 @@ import android.location.Location
 import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -24,6 +25,21 @@ data class Weather(
     val uv: Int,
     val place: String?,
     val fetchedAt: Long,
+    /** Önümüzdeki saatler (hava durumu satırına dokununca gösterilir); eski önbellekte boş. */
+    val hourly: List<HourForecast> = emptyList(),
+)
+
+/** Bir saatlik tahmin; [time] saatin başlangıcı (epoch ms). */
+@Immutable
+data class HourForecast(
+    val time: Long,
+    val temp: Int,
+    val code: Int,
+    val isDay: Boolean,
+    /** Yağış olasılığı (%). */
+    val rain: Int,
+    val wind: Int,
+    val uv: Int,
 )
 
 enum class WeatherStatus { Loading, Ok, Failed, NeedsPermission }
@@ -50,6 +66,15 @@ class WeatherRepository(private val context: Context) {
                 uv = o.optInt("uv"),
                 place = o.optString("place").ifBlank { null },
                 fetchedAt = o.getLong("fetchedAt"),
+                hourly = o.optJSONArray("hourly")?.let { arr ->
+                    List(arr.length()) {
+                        val h = arr.getJSONObject(it)
+                        HourForecast(
+                            h.getLong("t"), h.getInt("temp"), h.getInt("code"), h.getBoolean("day"),
+                            h.getInt("rain"), h.getInt("wind"), h.getInt("uv"),
+                        )
+                    }
+                }.orEmpty(),
             )
         }.getOrNull()
     }
@@ -60,7 +85,9 @@ class WeatherRepository(private val context: Context) {
                 Locale.US,
                 "https://api.open-meteo.com/v1/forecast?latitude=%.3f&longitude=%.3f" +
                     "&current=temperature_2m,weather_code,wind_speed_10m,is_day" +
-                    "&daily=temperature_2m_max,temperature_2m_min,uv_index_max&timezone=auto&forecast_days=1",
+                    "&hourly=temperature_2m,weather_code,precipitation_probability,wind_speed_10m,is_day,uv_index" +
+                    "&daily=temperature_2m_max,temperature_2m_min,uv_index_max" +
+                    "&timezone=auto&timeformat=unixtime&forecast_days=2",
                 loc.latitude,
                 loc.longitude,
             ),
@@ -87,9 +114,28 @@ class WeatherRepository(private val context: Context) {
             uv = daily.optJSONArray("uv_index_max")?.optDouble(0, 0.0)?.roundToInt() ?: 0,
             place = placeName(loc),
             fetchedAt = System.currentTimeMillis(),
+            hourly = json.optJSONObject("hourly")?.let(::parseHourly).orEmpty(),
         )
         save(weather)
         weather
+    }
+
+    /** İçinde bulunulan saatten başlayarak 24 saat. */
+    private fun parseHourly(h: JSONObject): List<HourForecast> {
+        val times = h.getJSONArray("time")
+        fun num(name: String, i: Int) = h.optJSONArray(name)?.optDouble(i, 0.0)?.takeIf { !it.isNaN() } ?: 0.0
+        val hourStart = System.currentTimeMillis() / HOUR_MS * HOUR_MS
+        return List(times.length()) { i ->
+            HourForecast(
+                time = times.getLong(i) * 1000,
+                temp = num("temperature_2m", i).roundToInt(),
+                code = num("weather_code", i).toInt(),
+                isDay = num("is_day", i) >= 1,
+                rain = num("precipitation_probability", i).roundToInt(),
+                wind = num("wind_speed_10m", i).roundToInt(),
+                uv = num("uv_index", i).roundToInt(),
+            )
+        }.filter { it.time >= hourStart }.take(24)
     }
 
     private fun save(w: Weather) {
@@ -103,6 +149,15 @@ class WeatherRepository(private val context: Context) {
             .put("uv", w.uv)
             .put("place", w.place.orEmpty())
             .put("fetchedAt", w.fetchedAt)
+            .put(
+                "hourly",
+                JSONArray(
+                    w.hourly.map {
+                        JSONObject().put("t", it.time).put("temp", it.temp).put("code", it.code).put("day", it.isDay)
+                            .put("rain", it.rain).put("wind", it.wind).put("uv", it.uv)
+                    },
+                ),
+            )
         prefs.edit().putString(KEY, o.toString()).apply()
     }
 
@@ -116,5 +171,6 @@ class WeatherRepository(private val context: Context) {
 
     private companion object {
         const val KEY = "last"
+        const val HOUR_MS = 60 * 60 * 1000L
     }
 }

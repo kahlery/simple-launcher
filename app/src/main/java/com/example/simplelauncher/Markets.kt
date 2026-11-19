@@ -37,7 +37,7 @@ data class PerfRow(
 data class MarketData(val rows: List<PerfRow>, val fetchedAt: Long)
 
 /** Satırın verisi nereden gelir. */
-private sealed interface Source {
+sealed interface Source {
     /** Yahoo Finance günlük kapanışları. */
     data class Yahoo(val symbol: String) : Source
 
@@ -51,10 +51,18 @@ private sealed interface Source {
     data class Fred(val series: String) : Source
 }
 
-private data class Item(val label: String, val source: Source)
+/** Tablodaki bir satırın tanımı: görünen ad ve verinin kaynağı. */
+@Immutable
+data class MarketItem(val label: String, val source: Source)
 
-/** Tabloda gösterilenler, bu sırayla (yatırımlar en üstte). */
-private val ITEMS = listOf(
+/** Yahoo aramasından bir sonuç ("Ekle" listesi). */
+@Immutable
+data class SymbolResult(val symbol: String, val name: String, val exchange: String, val type: String)
+
+private typealias Item = MarketItem
+
+/** İlk açılıştaki liste; kullanıcı menüden ekleyip çıkarır. Çıkarılanlar "Ekle" listesinde geri sunulur. */
+private val DEFAULT_ITEMS = listOf(
     Item("CNDX", Source.Yahoo("CNDX.L")),
     Item("USIRYY", Source.Fred("CPIAUCNS")),
     Item("DEIRYY", Source.Eurostat("DE")),
@@ -78,6 +86,99 @@ class MarketRepository(context: Context) {
 
     private val prefs = context.getSharedPreferences("markets", Context.MODE_PRIVATE)
 
+    /** Tabloda gösterilen satırlar, bu sırayla. */
+    fun items(): List<MarketItem> {
+        val raw = prefs.getString(KEY_ITEMS, null) ?: return DEFAULT_ITEMS
+        return runCatching {
+            val arr = JSONArray(raw)
+            List(arr.length()) { i ->
+                val o = arr.getJSONObject(i)
+                val a = o.getString("a")
+                val source = when (o.getString("type")) {
+                    "yahoo" -> Source.Yahoo(a)
+                    "ratio" -> Source.Ratio(a, o.getString("b"))
+                    "eurostat" -> Source.Eurostat(a)
+                    "fred" -> Source.Fred(a)
+                    else -> null
+                }
+                source?.let { MarketItem(o.getString("label"), it) }
+            }.filterNotNull()
+        }.getOrDefault(DEFAULT_ITEMS)
+    }
+
+    fun saveItems(items: List<MarketItem>) {
+        val arr = JSONArray(
+            items.map { item ->
+                val o = JSONObject().put("label", item.label)
+                when (val s = item.source) {
+                    is Source.Yahoo -> o.put("type", "yahoo").put("a", s.symbol)
+                    is Source.Ratio -> o.put("type", "ratio").put("a", s.numerator).put("b", s.denominator)
+                    is Source.Eurostat -> o.put("type", "eurostat").put("a", s.geo)
+                    is Source.Fred -> o.put("type", "fred").put("a", s.series)
+                }
+            },
+        )
+        prefs.edit().putString(KEY_ITEMS, arr.toString()).apply()
+    }
+
+    /** Listeden çıkarılmış hazır satırlar (enflasyon, altın, kurlar…); "Ekle"de geri eklenebilir. */
+    fun removedDefaults(): List<MarketItem> {
+        val shown = items().map { it.label }.toSet()
+        return DEFAULT_ITEMS.filterNot { it.label in shown }
+    }
+
+    /** Yahoo sembolünü satır yapar; ad sembolün borsa eki olmadan hâli (EIMI.L → EIMI), çakışırsa tam sembol. */
+    fun yahooItem(symbol: String): MarketItem {
+        val short = symbol.substringBefore('.').substringBefore('=').ifEmpty { symbol }
+        val taken = items().map { it.label }.toSet()
+        return MarketItem(if (short in taken) symbol else short, Source.Yahoo(symbol))
+    }
+
+    /** Yahoo'da sembol/isim araması (hisse, ETF, fon, döviz, emtia, endeks, kripto). */
+    suspend fun search(query: String): List<SymbolResult> = withContext(Dispatchers.IO) {
+        if (query.isBlank()) return@withContext emptyList()
+        val url = "https://query1.finance.yahoo.com/v1/finance/search?quotesCount=12&newsCount=0&q=" +
+            java.net.URLEncoder.encode(query.trim(), "UTF-8")
+        val quotes = JSONObject(get(url, userAgent = "Mozilla/5.0")).optJSONArray("quotes") ?: return@withContext emptyList()
+        List(quotes.length()) { quotes.getJSONObject(it) }
+            .filter { it.has("symbol") && it.optString("quoteType") != "OPTION" }
+            .map {
+                SymbolResult(
+                    symbol = it.getString("symbol"),
+                    name = it.optString("shortname").ifEmpty { it.optString("longname") }.trim(),
+                    exchange = it.optString("exchDisp"),
+                    type = it.optString("typeDisp").ifEmpty { it.optString("quoteType") },
+                )
+            }
+    }
+
+    /**
+     * Önbellekteki veriyi satır listesine göre dizer: çıkarılan satırlar düşer, yeni eklenenler
+     * (henüz verisi yoksa) boş satır olarak görünür.
+     */
+    fun arrange(data: MarketData?): MarketData {
+        val rows = data?.rows?.associateBy { it.label }.orEmpty()
+        return MarketData(
+            items().map { rows[it.label] ?: PerfRow(it.label, PERF_PERIODS.map { null }, it.source.isInflation) },
+            data?.fetchedAt ?: 0,
+        )
+    }
+
+    /** Tek satırı çekip önbellekteki veriye ekler (yeni eklenen satır için tüm tabloyu yeniden çekmemek adına). */
+    suspend fun fetchOne(item: MarketItem): MarketData = withContext(Dispatchers.IO) {
+        val symbols = when (val s = item.source) {
+            is Source.Yahoo -> listOf(s.symbol)
+            is Source.Ratio -> listOf(s.numerator, s.denominator)
+            else -> emptyList()
+        }
+        val yahoo = symbols.associateWith { runCatching { yahooSeries(it) }.getOrNull() }
+        val row = compute(item, yahoo) ?: error("${item.label} verisi alınamadı")
+        val current = cached() ?: MarketData(emptyList(), System.currentTimeMillis())
+        val merged = current.copy(rows = current.rows.filterNot { it.label == row.label } + row)
+        prefs.edit().putString(KEY_DATA, toJson(merged).toString()).apply()
+        arrange(merged)
+    }
+
     fun cached(): MarketData? {
         val raw = prefs.getString(KEY_DATA, null) ?: return null
         return runCatching {
@@ -96,11 +197,7 @@ class MarketRepository(context: Context) {
                     )
                 },
                 json.getLong("fetchedAt"),
-            ).let { data ->
-                // Liste değişmişse önbellekteki veri de yeni sırayla gösterilsin; çıkarılan satırlar düşer.
-                val order = ITEMS.map { it.label }
-                data.copy(rows = data.rows.filter { it.label in order }.sortedBy { order.indexOf(it.label) })
-            }
+            )
         }.getOrNull()
     }
 
@@ -109,9 +206,11 @@ class MarketRepository(context: Context) {
      * hiçbiri gelmezse hata fırlatır.
      */
     suspend fun fetch(): MarketData = withContext(Dispatchers.IO) {
+        val items = items()
+        if (items.isEmpty()) return@withContext MarketData(emptyList(), System.currentTimeMillis())
         val old = cached()?.rows?.associateBy { it.label }.orEmpty()
         val yahoo = HashMap<String, Series?>()
-        val symbols = ITEMS.flatMap {
+        val symbols = items.flatMap {
             when (val s = it.source) {
                 is Source.Yahoo -> listOf(s.symbol)
                 is Source.Ratio -> listOf(s.numerator, s.denominator)
@@ -121,7 +220,7 @@ class MarketRepository(context: Context) {
         val fresh = coroutineScope {
             val loaded = symbols.map { sym -> async { sym to runCatching { yahooSeries(sym) }.getOrNull() } }.awaitAll()
             yahoo.putAll(loaded)
-            ITEMS.map { item -> async { item to runCatching { compute(item, yahoo) }.getOrNull() } }.awaitAll()
+            items.map { item -> async { item to runCatching { compute(item, yahoo) }.getOrNull() } }.awaitAll()
         }
         if (fresh.all { it.second == null }) error("piyasa verisi alınamadı")
         val rows = fresh.map { (item, row) ->
@@ -260,6 +359,7 @@ class MarketRepository(context: Context) {
 
     private companion object {
         const val KEY_DATA = "data"
+        const val KEY_ITEMS = "items"
     }
 }
 

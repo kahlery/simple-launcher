@@ -45,7 +45,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private val marketRepo = MarketRepository(application)
 
     /** Enflasyon ve piyasa performans tablosu. */
-    var markets by mutableStateOf(marketRepo.cached())
+    var markets by mutableStateOf(marketRepo.cached()?.let(marketRepo::arrange))
         private set
     private var marketJob: Job? = null
 
@@ -61,6 +61,46 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "piyasa verisi alınamadı", e)
+            }
+        }
+    }
+
+    /** Tablo satırını listeden çıkarır. */
+    fun removeMarket(label: String) {
+        marketRepo.saveItems(marketRepo.items().filterNot { it.label == label })
+        markets = marketRepo.arrange(markets)
+    }
+
+    /** Satırı [delta] kadar yukarı (-1) ya da aşağı (+1) taşır. */
+    fun moveMarket(label: String, delta: Int) {
+        val items = marketRepo.items().toMutableList()
+        val from = items.indexOfFirst { it.label == label }
+        val to = from + delta
+        if (from < 0 || to !in items.indices) return
+        items.add(to, items.removeAt(from))
+        marketRepo.saveItems(items)
+        markets = marketRepo.arrange(markets)
+    }
+
+    suspend fun searchSymbols(query: String): List<SymbolResult> = marketRepo.search(query)
+
+    fun removedMarketDefaults(): List<MarketItem> = marketRepo.removedDefaults()
+
+    /** Yahoo sembolünü listenin sonuna ekler. */
+    fun addMarketSymbol(symbol: String) = addMarket(marketRepo.yahooItem(symbol))
+
+    /** Satırı listenin sonuna ekler ve yalnızca onun verisini çeker. */
+    fun addMarket(item: MarketItem) {
+        if (marketRepo.items().any { it.label == item.label }) return
+        marketRepo.saveItems(marketRepo.items() + item)
+        markets = marketRepo.arrange(markets)
+        viewModelScope.launch {
+            try {
+                markets = marketRepo.fetchOne(item)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "${item.label} verisi alınamadı", e)
             }
         }
     }
