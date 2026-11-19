@@ -36,8 +36,9 @@ android {
             "EB_REDIRECT_URL",
             "\"${secret("ENABLE_BANKING_REDIRECT_URL", "https://example.com/simplelauncher/callback")}\"",
         )
-        // Ana ekranda gösterilecek bankalar, Enable Banking'deki adlarıyla ve bu sırayla.
-        buildConfigField("String", "EB_ASPSPS", "\"${secret("ENABLE_BANKING_ASPSPS", "N26,Revolut,Wise")}\"")
+        // İlk açılışta ana ekranda gösterilecek bankalar (Enable Banking'deki adlarıyla, bu sırayla);
+        // sonrasında liste launcher'dan, banka satırının menüsüyle değiştirilir.
+        buildConfigField("String", "EB_ASPSPS", "\"${secret("ENABLE_BANKING_ASPSPS", "Revolut,Wise")}\"")
         buildConfigField("String", "EB_ASPSP_COUNTRY", "\"${secret("ENABLE_BANKING_COUNTRY", "DE")}\"")
     }
 

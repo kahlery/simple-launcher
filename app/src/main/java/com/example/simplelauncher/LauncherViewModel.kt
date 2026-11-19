@@ -68,9 +68,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     var prayers by mutableStateOf(prayerRepo.cached())
         private set
 
-    /** Ana ekranda alt alta gösterilen bankalar (secrets.properties'teki sırayla). */
-    val banks: List<BankSlot> = BuildConfig.EB_ASPSPS.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-        .map { BankSlot(BankRepository(application, it)) }
+    /** Ana ekranda alt alta gösterilen bankalar; menüden eklenip kaldırılabilir. */
+    val banks = mutableStateListOf<BankSlot>().apply {
+        BankRepository.loadBankList(application).forEach { add(newSlot(it)) }
+    }
 
     var bankHidden by mutableStateOf(bankHiddenPrefs.getBoolean(BankRepository.KEY_HIDDEN, false))
         private set
@@ -85,8 +86,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private var refreshJob: Job? = null
     private var weatherJob: Job? = null
 
-    /** Onay sayfası oturumu kurunca (launcher o sırada açık olsa bile) o bankanın bakiyesini hemen çek. */
-    private val stopBankWatches = banks.map { slot -> slot.repo.onSessionChanged { refreshBank(slot, force = true) } }
     private var loaded = false
 
     private val callback = object : LauncherApps.Callback() {
@@ -383,6 +382,53 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    /** Onay sayfası oturumu kurunca (launcher o sırada açık olsa bile) o bankanın bakiyesini hemen çek. */
+    private fun newSlot(bank: String): BankSlot {
+        val slot = BankSlot(BankRepository(getApplication(), bank))
+        slot.unwatch = slot.repo.onSessionChanged { refreshBank(slot, force = true) }
+        return slot
+    }
+
+    private fun saveBankList() = BankRepository.saveBankList(getApplication(), banks.map { it.name })
+
+    /** Yeni bankayı listenin sonuna ekler (zaten varsa onu döner); bağlanmak için onayı ayrıca başlatılır. */
+    fun addBank(bank: String): BankSlot {
+        banks.firstOrNull { it.name == bank }?.let { return it }
+        val slot = newSlot(bank)
+        banks.add(slot)
+        saveBankList()
+        refreshBank(slot)
+        return slot
+    }
+
+    /** Bankayı listeden çıkarır, onayını geri alır, bakiye ve eşik kayıtlarını siler. */
+    fun removeBank(slot: BankSlot) {
+        slot.job?.cancel()
+        slot.unwatch?.invoke()
+        banks.remove(slot)
+        saveBankList()
+        thresholds.keys.filter { it.startsWith("${slot.name}|") }.forEach { key ->
+            thresholds.remove(key)
+            thresholdPrefs.edit().remove(key).apply()
+        }
+        viewModelScope.launch {
+            try {
+                slot.repo.disconnect()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "${slot.name} kaldırılamadı", e)
+            }
+        }
+    }
+
+    /** "Ekle" listesi için Enable Banking'in desteklediği bankalar (zaten ekli olanlar hariç). */
+    suspend fun availableBanks(): List<String> {
+        val repo = banks.firstOrNull()?.repo ?: BankRepository(getApplication(), "")
+        val added = banks.map { it.name }.toSet()
+        return repo.availableBanks().filterNot { it in added }
+    }
+
     fun toggleBankHidden() {
         bankHidden = !bankHidden
         bankHiddenPrefs.edit().putBoolean(BankRepository.KEY_HIDDEN, bankHidden).apply()
@@ -426,7 +472,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     override fun onCleared() {
         repo.unregister(callback)
-        stopBankWatches.forEach { it() }
+        banks.forEach { it.unwatch?.invoke() }
     }
 
     private companion object {
@@ -446,4 +492,5 @@ class BankSlot(val repo: BankRepository) {
     var status by mutableStateOf(BankStatus.Loading)
         internal set
     internal var job: Job? = null
+    internal var unwatch: (() -> Unit)? = null
 }

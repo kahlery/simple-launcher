@@ -33,12 +33,21 @@ Eski launcher'a dönmek için aynı yerden Pixel Launcher'ı seç.
 
 Widget, ikon paketi, iş profili uygulamaları ve uygulama kısayol menüleri yok.
 
-## Banka bakiyeleri: N26, Revolut, Wise (Enable Banking)
+## Banka bakiyeleri (Enable Banking)
 
-Ezan vaktinin altında her banka için bir satır bakiyeyi Enable Banking üzerinden (PSD2, yalnızca okuma) gösterir.
-Bir bankada birden fazla hesap varsa (Revolut/Wise'ta her para birimi ayrı hesaptır) hepsi aynı satırda
-yan yana yazılır (`Wise €310.55 · $45.00`); bakiyesi sıfır olan hesaplar gösterilmez.
-Dokun → tüm bakiyeleri gizle/göster, uzun bas → o bankayı hemen yenile. Kendiliğinden en fazla 6 saatte bir
+Ezan vaktinin altında her banka için bir satır bakiyeyi Enable Banking üzerinden (PSD2, yalnızca okuma) gösterir
+(varsayılan: Revolut, Wise). Bir bankada birden fazla hesap varsa (Revolut/Wise'ta her para birimi ayrı hesaptır)
+hepsi aynı satırda yan yana yazılır (`Wise €310.55 · $45.00`); bakiyesi sıfır olan hesaplar gösterilmez.
+
+Bir banka satırına dokununca menü açılır:
+- **Connect / Reconnect**: bağlı değilse ya da onay süresi dolduysa bankanın onay sayfasını açar.
+- **Thresholds**: para birimi başına renk eşikleri ve bakiyeleri gizleme.
+- **Refresh**: o bankayı hemen yeniler (uzun basmak da aynısını yapar).
+- **Add account**: Enable Banking'in desteklediği bankalardan birini seçip ekler, onay sayfası hemen açılır.
+- **Remove**: bankayı ana ekrandan kaldırır, Enable Banking'deki onayı geri alır ve kayıtlarını siler
+  (iki kez dokunmak gerekir).
+
+Hiç banka kalmazsa yerinde "+ Add bank account" satırı görünür. Bakiyeler kendiliğinden en fazla 6 saatte bir
 yenilenir (PSD2, kullanıcı başında değilken hesap başına günde 4 çekmeye izin verir).
 
 Bir kerelik kurulum:
@@ -47,12 +56,12 @@ Bir kerelik kurulum:
    - Environment: **Production**
    - Redirect URL: `https://localhost/callback` (açılmaz, launcher yakalar)
    - Anahtarı tarayıcıda oluşturup `.pem` dosyasını indir.
-2. Uygulamada **Activate by linking accounts** ile N26, Revolut ve Wise hesaplarını bağla (ücretsiz kısıtlı
-   mod yalnızca burada bağlanan hesaplara izin verir).
+2. Uygulamada **Activate by linking accounts** ile göstermek istediğin banka hesaplarını bağla (ücretsiz kısıtlı
+   mod yalnızca burada bağlanan hesaplara izin verir; sonradan launcher'dan eklenecek bankalar da burada bağlı olmalı).
 3. `.pem` dosyasını `secrets/enablebanking.pem` olarak koy, `secrets.properties.example` dosyasını
    `secrets.properties` olarak kopyala ve `ENABLE_BANKING_APP_ID` alanına uygulamanın kimliğini yaz.
-   Gösterilecek bankalar `ENABLE_BANKING_ASPSPS` ile seçilir (varsayılan `N26,Revolut,Wise`).
+   İlk açılışta gösterilecek bankalar `ENABLE_BANKING_ASPSPS` ile seçilir (varsayılan `Revolut,Wise`).
    İkisi de `.gitignore` içinde, repoya girmez.
-4. Yeniden derle ve kur; ana ekranda her bankanın satırına dokunup o bankanın onayını ver.
+4. Yeniden derle ve kur; ana ekranda her bankanın satırına dokunup **Connect** ile onay ver.
 
-Onay süresi dolunca (en fazla 180 gün) satır "access expired, tap to reconnect" der; dokunup yeniden onayla.
+Onay süresi dolunca (en fazla 180 gün) satır "access expired" der; menüden **Reconnect** ile yeniden onayla.

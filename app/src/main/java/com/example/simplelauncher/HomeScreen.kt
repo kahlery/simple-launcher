@@ -69,6 +69,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -127,8 +130,8 @@ private val FOLDER_CELL_HEIGHT = 92.dp
 private val BANNER_HEIGHT = 32.dp
 private val PRAYER_ROW_HEIGHT = 28.dp
 
-// Üst şerit en fazla 5 satır: hava durumu (dikey boşluğuyla) + 4 satır. Fazlası şeridin içinde kayar.
-private val BANNER_PAGE_HEIGHT = BANNER_HEIGHT + 8.dp + PRAYER_ROW_HEIGHT * 4
+// Üst şerit en fazla 4 satır: hava durumu (dikey boşluğuyla) + 3 satır. Fazlası şeridin içinde kayar.
+private val BANNER_PAGE_HEIGHT = BANNER_HEIGHT + 8.dp + PRAYER_ROW_HEIGHT * 3
 
 // Sayfa noktalarının kapladığı yükseklik (üst boşluk + nokta + alt boşluk).
 private val PAGE_DOTS_HEIGHT = 6.dp + 5.dp + 4.dp
@@ -169,13 +172,21 @@ fun HomeScreen(
     var menu by remember { mutableStateOf<AppMenuState?>(null) }
     // Eşik ayarları açık olan banka.
     var thresholdSlot by remember { mutableStateOf<BankSlot?>(null) }
+    // Banka satırına dokununca açılan menü (banka ve satırın ekrandaki yeri) ve "banka ekle" listesi.
+    var bankMenu by remember { mutableStateOf<Pair<BankSlot, Rect>?>(null) }
+    var addingBank by remember { mutableStateOf(false) }
     val bannerPager = rememberPagerState { 2 }
     // Şerit sayfalarının kendi dikey kaydırmaları.
     val infoScroll = rememberScrollState()
     val tableScroll = rememberScrollState()
 
-    BackHandler(enabled = editMode || openFolder != null || menu != null || thresholdSlot != null) {
+    BackHandler(
+        enabled = editMode || openFolder != null || menu != null || thresholdSlot != null ||
+            bankMenu != null || addingBank,
+    ) {
         when {
+            addingBank -> addingBank = false
+            bankMenu != null -> bankMenu = null
             thresholdSlot != null -> thresholdSlot = null
             menu != null -> menu = null
             openFolder != null && folderEditMode -> folderEditMode = false
@@ -191,6 +202,8 @@ fun HomeScreen(
             editMode = false
             menu = null
             thresholdSlot = null
+            bankMenu = null
+            addingBank = false
             if (bannerPager.currentPage != 0) bannerPager.animateScrollToPage(0)
             if (scroll.value != 0) scroll.animateScrollTo(0)
         }
@@ -420,7 +433,7 @@ fun HomeScreen(
                     ) {
                         // Hava durumu şeridi ve ezan vakti ızgaranın ilk satırı gibi listeyle birlikte kayar.
                         // Üst şerit yatay sayfalar: 1) hava durumu, ezan, bankalar 2) piyasa performansı.
-                        // Yüksekliği sabit 5 satır; uzun sayfa kendi içinde dikey kayar.
+                        // Yüksekliği sabit 4 satır; uzun sayfa kendi içinde dikey kayar.
                         Column(modifier = Modifier.onSizeChanged { bannerPx = it.height }) {
                             HorizontalPager(
                                 state = bannerPager,
@@ -432,8 +445,8 @@ fun HomeScreen(
                                         vm = vm,
                                         scroll = infoScroll,
                                         onRequestLocation = onRequestLocation,
-                                        onConnectBank = onConnectBank,
-                                        onThresholds = { thresholdSlot = it },
+                                        onBankMenu = { slot, anchor -> bankMenu = slot to anchor },
+                                        onAddBank = { addingBank = true },
                                     )
                                     else -> PerformanceTable(
                                         data = vm.markets,
@@ -566,6 +579,58 @@ fun HomeScreen(
                     onDismiss = { openFolderKey = null },
                 )
             }
+        }
+
+        // Banka satırına dokununca açılan menü.
+        var shownBankMenu by remember { mutableStateOf<Pair<BankSlot, Rect>?>(null) }
+        LaunchedEffect(bankMenu) { bankMenu?.let { shownBankMenu = it } }
+        AnimatedVisibility(
+            visible = bankMenu != null,
+            enter = fadeIn(tween(MENU_ANIM_MS)),
+            exit = fadeOut(tween(MENU_ANIM_MS)),
+        ) {
+            val (slot, anchor) = shownBankMenu ?: return@AnimatedVisibility
+            BankMenu(
+                slot = slot,
+                anchor = anchor,
+                onDismiss = { bankMenu = null },
+                onConnect = {
+                    bankMenu = null
+                    onConnectBank(slot)
+                },
+                onThresholds = {
+                    bankMenu = null
+                    thresholdSlot = slot
+                },
+                onRefresh = {
+                    bankMenu = null
+                    vm.refreshBank(slot, force = true)
+                },
+                onAdd = {
+                    bankMenu = null
+                    addingBank = true
+                },
+                onRemove = {
+                    bankMenu = null
+                    vm.removeBank(slot)
+                },
+            )
+        }
+
+        // "Ekle": Enable Banking'in desteklediği bankalardan biri seçilir, hemen onayı başlar.
+        AnimatedVisibility(
+            visible = addingBank,
+            enter = fadeIn(tween(MENU_ANIM_MS)),
+            exit = fadeOut(tween(MENU_ANIM_MS)),
+        ) {
+            AddBankDialog(
+                load = vm::availableBanks,
+                onPick = { name ->
+                    addingBank = false
+                    onConnectBank(vm.addBank(name))
+                },
+                onDismiss = { addingBank = false },
+            )
         }
 
         // Banka satırına dokununca açılan eşik ayarları.
@@ -1176,6 +1241,32 @@ private fun AppMenu(
     onTakeOut: () -> Unit,
     onUninstall: () -> Unit,
 ) {
+    AnchoredMenu(anchor = anchor, onDismiss = onDismiss) {
+        for (shortcut in shortcuts) {
+            MenuRow(label = shortcut.label, onClick = { onShortcut(shortcut) }) {
+                shortcut.icon?.let {
+                    Image(bitmap = it, contentDescription = null, modifier = Modifier.fillMaxSize())
+                }
+            }
+        }
+        if (shortcuts.isNotEmpty()) {
+            Box(
+                modifier = Modifier
+                    .padding(vertical = 6.dp)
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(Color.White.copy(alpha = 0.12f)),
+            )
+        }
+        MenuRow(label = "App info", onClick = onAppInfo) { MenuGlyph("i") }
+        if (inFolder) MenuRow(label = "Remove from folder", onClick = onTakeOut) { MenuGlyph("↗") }
+        MenuRow(label = "Uninstall", onClick = onUninstall, color = DANGER_RED) { MenuGlyph("×", DANGER_RED) }
+    }
+}
+
+/** Bir öğenin ([anchor]) üstünde, sığmazsa altında açılan koyu menü; dışına dokununca kapanır. */
+@Composable
+private fun AnchoredMenu(anchor: Rect, onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     val density = LocalDensity.current
     val topInset = WindowInsets.systemBars.getTop(density)
     val bottomInset = WindowInsets.systemBars.getBottom(density)
@@ -1194,27 +1285,8 @@ private fun AppMenu(
                     .background(Color(0xFF202022), RoundedCornerShape(20.dp))
                     .clip(RoundedCornerShape(20.dp))
                     .padding(vertical = 6.dp),
-            ) {
-                for (shortcut in shortcuts) {
-                    MenuRow(label = shortcut.label, onClick = { onShortcut(shortcut) }) {
-                        shortcut.icon?.let {
-                            Image(bitmap = it, contentDescription = null, modifier = Modifier.fillMaxSize())
-                        }
-                    }
-                }
-                if (shortcuts.isNotEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .padding(vertical = 6.dp)
-                            .fillMaxWidth()
-                            .height(1.dp)
-                            .background(Color.White.copy(alpha = 0.12f)),
-                    )
-                }
-                MenuRow(label = "App info", onClick = onAppInfo) { MenuGlyph("i") }
-                if (inFolder) MenuRow(label = "Remove from folder", onClick = onTakeOut) { MenuGlyph("↗") }
-                MenuRow(label = "Uninstall", onClick = onUninstall, color = DANGER_RED) { MenuGlyph("×", DANGER_RED) }
-            }
+                content = content,
+            )
         },
     ) { measurables, constraints ->
         val panel = measurables.first().measure(constraints.copy(minWidth = 0, minHeight = 0))
@@ -1457,9 +1529,11 @@ private fun InfoPage(
     vm: LauncherViewModel,
     scroll: ScrollState,
     onRequestLocation: () -> Unit,
-    onConnectBank: (BankSlot) -> Unit,
-    onThresholds: (BankSlot) -> Unit,
+    onBankMenu: (BankSlot, Rect) -> Unit,
+    onAddBank: () -> Unit,
 ) {
+    // Menünün satırın yanında açılması için her banka satırının ekrandaki yeri.
+    val rowBounds = remember { HashMap<String, Rect>() }
     Column(Modifier.fillMaxSize().verticalScroll(scroll)) {
         WeatherBanner(
             weather = vm.weather,
@@ -1492,22 +1566,168 @@ private fun InfoPage(
                     status = slot.status,
                     hidden = vm.bankHidden,
                     levelOf = { vm.thresholdsFor(slot.name, it.currency).level(it.amount) },
-                    onTap = {
-                        when {
-                            slot.status == BankStatus.NotConfigured -> Unit
-                            slot.status == BankStatus.NotConnected ||
-                                slot.status == BankStatus.Expired -> onConnectBank(slot)
-                            // Bakiye varsa dokunmak eşik ayarlarını açar; yoksa yeniden dener.
-                            slot.balance != null -> onThresholds(slot)
-                            else -> vm.refreshBank(slot, force = true)
-                        }
-                    },
+                    onTap = { onBankMenu(slot, rowBounds[slot.name] ?: Rect.Zero) },
                     onLongPress = { vm.refreshBank(slot, force = true) },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(PRAYER_ROW_HEIGHT)
+                        .onGloballyPositioned { rowBounds[slot.name] = it.boundsInRoot() }
                         .padding(horizontal = 16.dp),
                 )
+            }
+        }
+        // Hiç banka kalmadıysa yeni hesap eklemenin tek yolu bu satır.
+        if (vm.banks.isEmpty()) {
+            BasicText(
+                text = "+ Add bank account",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(PRAYER_ROW_HEIGHT)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onAddBank,
+                    )
+                    .padding(horizontal = 16.dp, vertical = 5.dp),
+                style = TextStyle(fontFamily = LauncherFont, color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp),
+            )
+        }
+    }
+}
+
+/**
+ * Banka satırının menüsü: bağlı değilse bağlan, bakiye varsa eşikler; yenile, yeni hesap ekle ve kaldır.
+ * Kaldır geri alınamaz (banka onayı da geri alınır) diye ilk dokunuşta onay ister.
+ */
+@Composable
+private fun BankMenu(
+    slot: BankSlot,
+    anchor: Rect,
+    onDismiss: () -> Unit,
+    onConnect: () -> Unit,
+    onThresholds: () -> Unit,
+    onRefresh: () -> Unit,
+    onAdd: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    var confirmRemove by remember(slot) { mutableStateOf(false) }
+    AnchoredMenu(anchor = anchor, onDismiss = onDismiss) {
+        when (slot.status) {
+            BankStatus.NotConnected -> MenuRow(label = "Connect", onClick = onConnect) { MenuGlyph("→") }
+            BankStatus.Expired -> MenuRow(label = "Reconnect", onClick = onConnect) { MenuGlyph("→") }
+            else -> Unit
+        }
+        if (slot.balance != null) MenuRow(label = "Thresholds", onClick = onThresholds) { MenuGlyph("≡") }
+        if (slot.repo.hasSession()) MenuRow(label = "Refresh", onClick = onRefresh) { MenuGlyph("↻") }
+        MenuRow(label = "Add account", onClick = onAdd) { MenuGlyph("+") }
+        MenuRow(
+            label = if (confirmRemove) "Tap again to remove" else "Remove ${slot.name}",
+            onClick = { if (confirmRemove) onRemove() else confirmRemove = true },
+            color = DANGER_RED,
+        ) { MenuGlyph("×", DANGER_RED) }
+    }
+}
+
+/** Eklenebilecek bankaların aranabilir listesi. */
+@Composable
+private fun AddBankDialog(
+    load: suspend () -> List<String>,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val focusManager = LocalFocusManager.current
+    // null: yükleniyor, boş liste + hata: alınamadı.
+    var banks by remember { mutableStateOf<List<String>?>(null) }
+    var failed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        try {
+            banks = load()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            failed = true
+            banks = emptyList()
+        }
+    }
+    var query by remember { mutableStateOf("") }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.6f))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) {
+                focusManager.clearFocus()
+                onDismiss()
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(horizontal = 24.dp)
+                .fillMaxWidth()
+                .background(Color(0xFF202022), RoundedCornerShape(28.dp))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { focusManager.clearFocus() }
+                .padding(20.dp),
+        ) {
+            BasicText(
+                text = "Add bank account",
+                style = TextStyle(fontFamily = LauncherFont, fontWeight = FontWeight.Medium, color = Color.White, fontSize = 18.sp),
+            )
+            BasicTextField(
+                value = query,
+                onValueChange = { query = it.take(40) },
+                modifier = Modifier
+                    .padding(top = 14.dp, bottom = 8.dp)
+                    .fillMaxWidth()
+                    .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                singleLine = true,
+                textStyle = TextStyle(fontFamily = LauncherFont, color = Color.White, fontSize = 15.sp),
+                cursorBrush = SolidColor(Color.White),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
+                decorationBox = { inner ->
+                    Box {
+                        if (query.isEmpty()) {
+                            BasicText(
+                                text = "Search banks",
+                                style = TextStyle(fontFamily = LauncherFont, color = Color.White.copy(alpha = 0.35f), fontSize = 15.sp),
+                            )
+                        }
+                        inner()
+                    }
+                },
+            )
+            val list = banks
+            val dim = TextStyle(fontFamily = LauncherFont, color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
+            when {
+                list == null -> BasicText("Loading…", Modifier.padding(vertical = 12.dp), style = dim)
+                failed -> BasicText("Couldn't load banks. Check the connection.", Modifier.padding(vertical = 12.dp), style = dim)
+                else -> {
+                    val shown = list.filter { it.contains(query.trim(), ignoreCase = true) }
+                    if (shown.isEmpty()) {
+                        BasicText("No matching bank", Modifier.padding(vertical = 12.dp), style = dim)
+                    }
+                    LazyColumn(Modifier.heightIn(max = 320.dp)) {
+                        items(shown, key = { it }) { name ->
+                            BasicText(
+                                text = name,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onPick(name) }
+                                    .padding(vertical = 11.dp),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = TextStyle(fontFamily = LauncherFont, color = Color.White, fontSize = 15.sp),
+                            )
+                        }
+                    }
+                }
             }
         }
     }

@@ -115,6 +115,29 @@ class BankRepository(private val context: Context, val bank: String) {
         return BankBalance(listOf(Money(amount, prefs.getString(KEY_CURRENCY, "EUR")!!)), fetchedAt)
     }
 
+    /**
+     * Bankayı launcher'dan kaldırır: Enable Banking'deki oturumu kapatmayı dener (banka onayı geri alınır),
+     * sonra cihazdaki oturum ve bakiye kayıtlarını siler. Ağ hatası olsa da yerel kayıtlar silinir.
+     */
+    suspend fun disconnect() = withContext(Dispatchers.IO) {
+        prefs.getString(KEY_SESSION, null)?.let { session ->
+            runCatching { request("DELETE", "/sessions/$session", null) }
+        }
+        prefs.edit().apply {
+            for (key in listOf(
+                KEY_STATE, KEY_SESSION, KEY_ACCOUNT, KEY_ACCOUNTS, KEY_VALID_UNTIL,
+                KEY_AMOUNT, KEY_CURRENCY, KEY_BALANCES, KEY_FETCHED_AT,
+            )) remove(key)
+        }.apply()
+    }
+
+    /** Enable Banking'in bu ülkede kişisel hesap için desteklediği bankaların adları (alfabetik). */
+    suspend fun availableBanks(): List<String> = withContext(Dispatchers.IO) {
+        val list = request("GET", "/aspsps?country=${BuildConfig.EB_ASPSP_COUNTRY}&psu_type=personal", null)
+            .getJSONArray("aspsps")
+        List(list.length()) { list.getJSONObject(it).getString("name") }.distinct().sortedBy { it.lowercase(Locale.ROOT) }
+    }
+
     /** Banka onay sayfasının adresini döner; kullanıcı orada hesaplarına erişime izin verir. */
     suspend fun startAuth(): String = withContext(Dispatchers.IO) {
         val state = UUID.randomUUID().toString()
@@ -261,6 +284,18 @@ class BankRepository(private val context: Context, val bank: String) {
             context.getSharedPreferences("bank", Context.MODE_PRIVATE)
 
         const val KEY_HIDDEN = "hidden"
+
+        /** Ana ekranda gösterilen bankalar; ilk açılışta secrets.properties'teki listeyle başlar. */
+        fun loadBankList(context: Context): List<String> {
+            val prefs = context.getSharedPreferences("bank_list", Context.MODE_PRIVATE)
+            val raw = prefs.getString("list", null) ?: BuildConfig.EB_ASPSPS.replace(",", "\n")
+            return raw.split("\n").map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        }
+
+        fun saveBankList(context: Context, banks: List<String>) {
+            context.getSharedPreferences("bank_list", Context.MODE_PRIVATE)
+                .edit().putString("list", banks.joinToString("\n")).apply()
+        }
         private const val API = "https://api.enablebanking.com"
         // N26, Revolut ve Wise en fazla 180 gün kabul ediyor; saat farkı sınırı aşmasın diye bir gün pay.
         private const val CONSENT_DAYS = 179L

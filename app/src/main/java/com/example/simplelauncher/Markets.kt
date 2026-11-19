@@ -53,11 +53,9 @@ private sealed interface Source {
 
 private data class Item(val label: String, val source: Source)
 
-/** Tabloda gösterilenler, bu sırayla (ETF'ler en üstte). */
+/** Tabloda gösterilenler, bu sırayla (yatırımlar en üstte). */
 private val ITEMS = listOf(
     Item("CNDX", Source.Yahoo("CNDX.L")),
-    Item("EIMI", Source.Yahoo("EIMI.L")),
-    Item("ASELS", Source.Yahoo("ASELS.IS")),
     Item("USIRYY", Source.Fred("CPIAUCNS")),
     Item("DEIRYY", Source.Eurostat("DE")),
     Item("TRIRYY", Source.Eurostat("TR")),
@@ -99,9 +97,9 @@ class MarketRepository(context: Context) {
                 },
                 json.getLong("fetchedAt"),
             ).let { data ->
-                // Sıra değişmişse önbellekteki veri de yeni sırayla gösterilsin.
+                // Liste değişmişse önbellekteki veri de yeni sırayla gösterilsin; çıkarılan satırlar düşer.
                 val order = ITEMS.map { it.label }
-                data.copy(rows = data.rows.sortedBy { order.indexOf(it.label).let { i -> if (i < 0) Int.MAX_VALUE else i } })
+                data.copy(rows = data.rows.filter { it.label in order }.sortedBy { order.indexOf(it.label) })
             }
         }.getOrNull()
     }
